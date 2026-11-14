@@ -1,0 +1,39 @@
+#!/bin/sh
+# dwm-sysinfo — one snapshot of CPU / memory / disk / temperature for the Quickshell sidebar (System card).
+#
+#   dwm-sysinfo          key=value lines:
+#     cpu=<busy jiffies> <total jiffies>   (CPU % = difference between two snapshots)
+#     cores=N  load=<1 min load>
+#     mem=<used kB> <total kB>   swap=<used kB> <total kB>
+#     disk=<used bytes> <size bytes>   (the / filesystem)
+#     temp=<°C of the CPU, empty if no sensor>
+#     top=<name>|<cpu %>   (up to 3 lines: the busiest processes right now)
+#   dwm-sysinfo htop     open htop (btop if installed and htop not) in the default terminal
+
+if [ "$1" = htop ]; then
+	t=htop; command -v htop >/dev/null || t=btop
+	exec dwm-term --class sysmon --title "$t" -e "$t"
+fi
+
+awk '/^cpu /{busy=$2+$3+$4+$7+$8+$9; total=busy+$5+$6; print "cpu=" busy " " total; exit}' /proc/stat
+echo "cores=$(nproc 2>/dev/null || echo 1)"
+echo "load=$(cut -d' ' -f1 /proc/loadavg)"
+awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} /^SwapTotal:/{st=$2} /^SwapFree:/{sf=$2}
+     END{print "mem=" t-a " " t; print "swap=" st-sf " " st}' /proc/meminfo
+df -B1 --output=used,size / 2>/dev/null | awk 'NR==2{print "disk=" $1 " " $2}'
+
+# CPU temperature: k10temp (AMD) / coretemp (Intel) / zenpower, else the ACPI thermal zone
+temp=""
+for h in /sys/class/hwmon/hwmon*; do
+	case $(cat "$h/name" 2>/dev/null) in k10temp|coretemp|zenpower|cpu_thermal)
+		[ -r "$h/temp1_input" ] && temp=$(( $(cat "$h/temp1_input") / 1000 )) && break ;;
+	esac
+done
+[ -z "$temp" ] && [ -r /sys/class/thermal/thermal_zone0/temp ] && temp=$(( $(cat /sys/class/thermal/thermal_zone0/temp) / 1000 ))
+echo "temp=$temp"
+
+# busiest processes right now: the second of two quick top samples (the first one averages since boot)
+top -b -n 2 -d 0.4 -o %CPU -w 512 2>/dev/null | awk '
+	/^top -/ { blk++ ; next }
+	blk == 2 && /^ *PID/ { on = 1; next }
+	on && n < 3 && $9 + 0 > 0 { printf "top=%s|%s\n", $12, $9; n++ }'
