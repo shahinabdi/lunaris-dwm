@@ -1,0 +1,9 @@
+#!/bin/sh
+# dwm-statushover <block> <x> <y> <width> — called by dwm when the pointer moves onto another status
+# block of the bar (block 0 = left the status area). Shows / hides the tooltip in the Quickshell sidebar
+# config; the text comes from dwm-bartip.
+case $1 in
+	1) n=kb ;; 2) n=net ;; 3) n=vol ;; 4) n=mic ;; 5) n=bright ;; 6) n=bat ;; 7) n=clk ;; 8) n=notif ;; 9) n=sys ;;
+	*) exec qs -c arch-sidebar ipc call tooltip leave >/dev/null 2>&1 ;;
+esac
+exec qs -c arch-sidebar ipc call tooltip hover "$n" "$2" "$3" "$4" >/dev/null 2>&1

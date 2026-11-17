@@ -21,7 +21,7 @@ net() {
 	while IFS=: read -r type state conn; do
 		[ "$state" = connected ] || continue
 		if [ "$type" = ethernet ]; then
-			printf '\x02\U000F0200 %s\x02' "$conn"; return
+			printf '\x02\U000F0200\x02'; return   # name in the tooltip (hover)
 		elif [ "$type" = wifi ]; then
 			q=$(awk 'NR==3{print int($3*100/70)}' /proc/net/wireless)
 			q=${q:-0}
@@ -29,10 +29,10 @@ net() {
 			elif [ "$q" -ge 50 ]; then icon=$'\U000F0925'
 			elif [ "$q" -ge 25 ]; then icon=$'\U000F0922'
 			else                       icon=$'\U000F091F'; fi
-			printf '\x02%s %s\x02' "$icon" "$conn"; return
+			printf '\x02%s\x02' "$icon"; return   # network name in the tooltip (hover)
 		fi
 	done < <(nmcli -t -f TYPE,STATE,CONNECTION device 2>/dev/null)
-	printf '\x02\U000F092E off\x02'
+	printf '\x02\U000F092E\x02'
 }
 
 vol() {
@@ -94,12 +94,31 @@ notif() {   # saved notifications: cat + unread count, bell-off when silent
 	printf '\x08%s\x08' "$out"
 }
 
+# CPU and memory. The CPU % is measured between two updates: cpu_sample runs in the main loop (items run
+# in a subshell, which would forget the previous sample); the tooltip reads it from $XDG_RUNTIME_DIR too.
+cpu_pct=0
+cpu_sample() {
+	local busy total
+	read -r busy total < <(awk '/^cpu /{b=$2+$3+$4+$7+$8+$9; print b, b+$5+$6; exit}' /proc/stat)
+	if [ -n "${cpu_prev:-}" ] && (( total > ${cpu_prev#* } )); then
+		cpu_pct=$(( 100 * (busy - ${cpu_prev% *}) / (total - ${cpu_prev#* }) ))
+	fi
+	cpu_prev="$busy $total"
+	echo "$cpu_pct" > "${XDG_RUNTIME_DIR:-/tmp}/dwm-status.cpu"
+}
+sys() {
+	local mu mt
+	read -r mu mt < <(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print t-a, t}' /proc/meminfo)
+	printf '\x09\U000F0EE0 %s%%  \U000F035B %s%%\x09' "$cpu_pct" "$(( 100 * mu / mt ))"
+}
+
 # which items are shown: ~/.config/dwm-status.conf (SHOW_<item>=0 hides it), managed by dwm-bar
 CONF="$HOME/.config/dwm-status.conf"
-ITEMS=(kb net vol mic bright bat clk notif)
+ITEMS=(kb sys net vol mic bright bat clk notif)
 
 update() {
 	local out="" part it var
+	cpu_sample
 	for it in "${ITEMS[@]}"; do eval "SHOW_$it=1"; done
 	[ -r "$CONF" ] && . "$CONF"
 	for it in "${ITEMS[@]}"; do

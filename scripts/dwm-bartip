@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# dwm-bartip <item> — tooltip text for a bar item (first line = title, then details, last line = what clicks do).
+# items: kb net vol mic bright bat clk notif sys
+shopt -u patsub_replacement 2>/dev/null
+pct() { awk -v v="$1" 'BEGIN{printf "%d", v*100 + 0.5}'; }
+
+case $1 in
+kb)
+	IFS=, read -ra lays <<<"$(setxkbmap -query 2>/dev/null | awk '/^layout/{print $2}')"
+	g=$(xkb-group 2>/dev/null); cur=${lays[${g:-0}]:-?}
+	declare -A name=([fr]=French [ir]=Persian [us]=English [gb]="English (UK)" [de]=German [es]=Spanish [it]=Italian [ar]=Arabic)
+	echo "Keyboard: ${name[$cur]:-$cur}"
+	echo "Layouts: ${lays[*]}   ·   profile $(dwm-keyboard get profile 2>/dev/null || echo azerty)"
+	echo "Click: next layout (also Super+Space) · Right click: reset" ;;
+net)
+	found=0
+	while IFS=: read -r type state conn dev; do
+		[ "$state" = connected ] || continue
+		found=1
+		ip=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+		if [ "$type" = wifi ]; then
+			sig=$(nmcli -t -f IN-USE,SIGNAL,FREQ device wifi list --rescan no 2>/dev/null | awk -F: '$1=="*"{print $2 "% · " $3; exit}')
+			echo "Wi-Fi: $conn"
+			echo "Signal ${sig:-?}${ip:+   ·   $ip}"
+		else
+			echo "Ethernet: $conn"
+			echo "${dev}${ip:+   ·   $ip}"
+		fi
+		break
+	done < <(nmcli -t -f TYPE,STATE,CONNECTION,DEVICE device 2>/dev/null)
+	(( found )) || { echo "Offline"; echo "No network connected"; }
+	echo "Click: Wi-Fi networks · Right click: nmtui" ;;
+vol|mic)
+	[ "$1" = vol ] && t=@DEFAULT_AUDIO_SINK@ || t=@DEFAULT_AUDIO_SOURCE@
+	out=$(wpctl get-volume "$t" 2>/dev/null)
+	dev=$(wpctl inspect "$t" 2>/dev/null | sed -n 's/.*node\.description = "\(.*\)"/\1/p' | head -1)
+	[ "$1" = vol ] && what=Volume || what=Microphone
+	if [ -z "$out" ]; then echo "$what"; echo "No device"; else
+		v=$(pct "$(awk '{print $2}' <<<"$out")")
+		[[ $out == *MUTED* ]] && echo "$what: muted ($v%)" || echo "$what: $v%"
+		echo "${dev:-default device}"
+	fi
+	[ "$1" = vol ] && echo "Click: mute · Right click: mixer · Scroll: volume" \
+	               || echo "Click: mute · Right click: input devices · Scroll: level" ;;
+bright)
+	d=$(ls -d /sys/class/backlight/* 2>/dev/null | head -1)
+	echo "Brightness: $(( $(cat "$d/brightness") * 100 / $(cat "$d/max_brightness") ))%"
+	echo "Laptop screen"
+	echo "Scroll: brightness" ;;
+bat)
+	d=$(ls -d /sys/class/power_supply/BAT* 2>/dev/null | head -1)
+	c=$(cat "$d/capacity"); s=$(cat "$d/status")
+	echo "Battery: $c% · $s"
+	en=$(cat "$d/energy_now" 2>/dev/null || cat "$d/charge_now" 2>/dev/null)
+	ef=$(cat "$d/energy_full" 2>/dev/null || cat "$d/charge_full" 2>/dev/null)
+	pw=$(cat "$d/power_now" 2>/dev/null || cat "$d/current_now" 2>/dev/null)
+	if [ -n "$pw" ] && [ "$pw" -gt 0 ] 2>/dev/null; then
+		case $s in
+			Discharging) m=$(( en * 60 / pw )); echo "$((m / 60)) h $((m % 60)) min left   ·   $(awk -v p="$pw" 'BEGIN{printf "%.1f W", p/1e6}')" ;;
+			Charging)    m=$(( (ef - en) * 60 / pw )); echo "full in $((m / 60)) h $((m % 60)) min" ;;
+		esac
+	fi
+	h=$(awk -v n="$(cat "$d/energy_full" 2>/dev/null)" -v d="$(cat "$d/energy_full_design" 2>/dev/null)" 'BEGIN{if (d>0) printf "%d", n*100/d}')
+	[ -n "$h" ] && echo "Health: $h% of the original capacity"
+	echo "Click: details" ;;
+clk)
+	date '+%A %-d %B %Y'
+	date '+%H:%M   ·   week %V   ·   %Z'
+	echo "Click: calendar" ;;
+notif)
+	st=$(dwm-notif status 2>/dev/null)
+	n=$(sed -n 's/.*count=\([0-9]*\).*/\1/p' <<<"$st"); u=$(sed -n 's/.*unread=\([0-9]*\).*/\1/p' <<<"$st")
+	[ "${u:-0}" -gt 0 ] && echo "Notifications: ${n:-0} saved, $u new" || echo "Notifications: ${n:-0} saved"
+	[[ $st == *silent=1* ]] && echo "Silent is on: no pop-ups" || echo "Pop-ups on"
+	echo "Click: open · Middle: clear all · Right: silent on/off" ;;
+sys)
+	info=$(dwm-sysinfo)
+	read -r mu mt < <(sed -n 's/^mem=//p' <<<"$info")
+	t=$(sed -n 's/^temp=//p' <<<"$info"); l=$(sed -n 's/^load=//p' <<<"$info")
+	cpu=$(cat "${XDG_RUNTIME_DIR:-/tmp}/dwm-status.cpu" 2>/dev/null)
+	echo "CPU ${cpu:-?}%${t:+ · ${t}°C}   ·   load $l"
+	awk -v u="$mu" -v t="$mt" 'BEGIN{printf "Memory %.1f / %.1f GB\n", u/1048576, t/1048576}'
+	b=$(sed -n 's/^top=//p' <<<"$info" | awk -F'|' '{printf "%s%s %d%%", (NR>1?", ":""), $1, $2+0.5}')
+	[ -n "$b" ] && echo "Busiest: $b"
+	echo "Click: htop · Right click: System in the sidebar" ;;
+*) echo "usage: dwm-bartip kb|net|vol|mic|bright|bat|clk|notif|sys" >&2; exit 1 ;;
+esac

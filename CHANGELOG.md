@@ -13,6 +13,26 @@ Update an existing install: sidebar → ⚙ Settings → **Updates**, or `lunari
 
 ---
 
+## [0.10.0] — 2026-11-14 · Calendar, bar tooltips, CPU & RAM on the bar
+
+### Added
+- **Calendar**: a click on the date / clock opens a real calendar under the bar instead of a text notification:
+  month grid (Monday first) with week numbers, today highlighted, weekends in purple, ‹ › / *Today* / scroll or
+  ← → to change month, and today's date in full — also in the **Persian (Jalali) calendar**. Click again or Esc closes.
+- **Tooltips on the bar**: hover an item to see its details — Wi-Fi network, signal and IP; volume / microphone
+  level and device; battery time left, power draw and health; keyboard layouts; date and week; notifications; CPU,
+  temperature, memory and the busiest apps — plus what clicks do.
+- **CPU and RAM on the bar** (`󰻠 8%  󰍛 22%`): click for htop, right click for the System card. Can be hidden in
+  Settings → Bar items (*CPU & memory*).
+
+### Changed
+- The bar is tidier: Wi-Fi / Ethernet show only their icon; the network name moved to the tooltip.
+
+### Upgrade note
+- Tooltips need the new dwm: the update rebuilds it (or sidebar → ⚙ Settings → DWM → Rebuild).
+
+---
+
 ## [0.9.0] — 2026-11-14 · System monitor
 
 ### Added
@@ -197,6 +217,7 @@ Update an existing install: sidebar → ⚙ Settings → **Updates**, or `lunari
   controls (`dwm-ctl`), status bar (`dwm-status`).
 - French AZERTY ⇄ Persian keyboard layouts.
 
+[0.10.0]: https://github.com/shahinabdi/lunaris/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/shahinabdi/lunaris/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/shahinabdi/lunaris/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/shahinabdi/lunaris/compare/v0.6.0...v0.7.0

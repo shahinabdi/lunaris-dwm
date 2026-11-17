@@ -96,7 +96,9 @@ Volume  󰕾|Left: mute   Right: mixer   Scroll: volume
 Microphone  󰍬|Left: mute   Right: input devices   Scroll: mic volume
 Brightness  󰃟|Scroll: brightness
 Battery  󰁹|Click: details
-Date  󰃭|Left: calendar
+Date  󰃭|Left: calendar (month grid, week numbers, Persian date)
+CPU & RAM  󰻠|Left: htop   Right: System card
+Hover any item|Tooltip with details (network, volume, battery time left…)
 Notifications  󰄛|Left: open list   Middle: clear all   Right: silent on/off
 '
 

@@ -168,6 +168,9 @@ static const char *bidi(const char *s, int maxw);
 static void drawbar(Monitor *m);
 static void drawbars(void);
 static void enternotify(XEvent *e);
+static void leavenotify(XEvent *e);
+static int statusblockat(Monitor *m, int x, int *bx, int *bw);
+static void statushover(Monitor *m, int block, int bx, int bw);
 static void expose(XEvent *e);
 static void focus(Client *c);
 static void focusin(XEvent *e);
@@ -265,6 +268,7 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[ConfigureNotify] = configurenotify,
 	[DestroyNotify] = destroynotify,
 	[EnterNotify] = enternotify,
+	[LeaveNotify] = leavenotify,
 	[Expose] = expose,
 	[FocusIn] = focusin,
 	[KeyPress] = keypress,
@@ -599,25 +603,9 @@ buttonpress(XEvent *e)
 			click = ClkLtSymbol;
 		else if (ev->x > selmon->ww - statusw) {
 			/* statuscmd: find which block (marker byte 1..31) was clicked */
-			char *text, *s, ch;
-			int cur = 0, sx = selmon->ww - statusw;
-
 			click = ClkStatusText;
-			statusblock = 0;
 			statusbutton = ev->button;
-			for (text = s = stext; *s && sx <= ev->x; s++) {
-				if ((unsigned char)*s >= ' ')
-					continue;
-				ch = *s;
-				*s = '\0';
-				sx += statustextwidth(text);
-				*s = ch;
-				text = s + 1;
-				if (sx > ev->x)
-					break;
-				cur = (cur == ch) ? 0 : ch;
-			}
-			statusblock = cur;
+			statusblock = statusblockat(selmon, ev->x, NULL, NULL);
 		}
 		else
 			click = ClkWinTitle;
@@ -1389,7 +1377,15 @@ motionnotify(XEvent *e)
 	static Monitor *mon = NULL;
 	Monitor *m;
 	XMotionEvent *ev = &e->xmotion;
+	int bx, bw, b;
 
+	/* Lunaris: hovering a status block shows its tooltip (dwm-statushover) */
+	for (m = mons; m; m = m->next)
+		if (ev->window == m->barwin) {
+			b = (m == selmon && ev->x > m->ww - statusw) ? statusblockat(m, ev->x, &bx, &bw) : 0;
+			statushover(m, b, bx, bw);
+			return;
+		}
 	if (ev->window != root)
 		return;
 	if ((m = recttomon(ev->x_root, ev->y_root, 1, 1)) != mon && mon) {
@@ -2226,7 +2222,7 @@ updatebars(void)
 	XSetWindowAttributes wa = {
 		.override_redirect = True,
 		.background_pixmap = ParentRelative,
-		.event_mask = ButtonPressMask|ExposureMask
+		.event_mask = ButtonPressMask|ExposureMask|PointerMotionMask|LeaveWindowMask
 	};
 	XClassHint ch = {"dwm", "dwm"};
 	for (m = mons; m; m = m->next) {
@@ -2428,6 +2424,64 @@ updatestatus(void)
 		statusw += statustextwidth(text) + 2; /* 2px right padding */
 	}
 	drawbar(selmon);
+}
+
+/* Lunaris: the status block (marker byte 1..31) under bar position x, with its left edge and width */
+int
+statusblockat(Monitor *m, int x, int *bx, int *bw)
+{
+	char *text, *s, ch;
+	int cur = 0, sx = m->ww - statusw, start = sx;
+
+	for (text = s = stext; *s && sx <= x; s++) {
+		if ((unsigned char)*s >= ' ')
+			continue;
+		ch = *s;
+		*s = '\0';
+		sx += statustextwidth(text);
+		*s = ch;
+		text = s + 1;
+		if (sx > x)          /* x is in the text that ends at this marker: block `cur`, from start to sx */
+			break;
+		cur = (cur == ch) ? 0 : ch;
+		start = sx;
+	}
+	if (bx && bw) {
+		*bx = start;
+		*bw = MAX(1, sx - start);
+	}
+	return cur;
+}
+
+/* tell the tooltip about the hovered block (only when it changes): dwm-statushover <block> <x> <y> <w> */
+void
+statushover(Monitor *m, int block, int bx, int bw)
+{
+	static int last = 0;
+	static char sb[8], sx[16], sy[16], sw[16];
+	const char *cmd[] = { "dwm-statushover", sb, sx, sy, sw, NULL };
+	Arg a = { .v = cmd };
+
+	if (block == last)
+		return;
+	last = block;
+	snprintf(sb, sizeof sb, "%d", block);
+	snprintf(sx, sizeof sx, "%d", block ? m->wx + bx : 0);
+	snprintf(sy, sizeof sy, "%d", m->by + bh);
+	snprintf(sw, sizeof sw, "%d", block ? bw : 0);
+	spawn(&a);
+}
+
+void
+leavenotify(XEvent *e)
+{
+	Monitor *m;
+
+	for (m = mons; m; m = m->next)
+		if (e->xcrossing.window == m->barwin) {
+			statushover(m, 0, 0, 0);
+			return;
+		}
 }
 
 int
