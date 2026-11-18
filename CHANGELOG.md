@@ -28,6 +28,10 @@ Update an existing install: sidebar → ⚙ Settings → **Updates**, or `lunari
 ### Changed
 - The bar is tidier: Wi-Fi / Ethernet show only their icon; the network name moved to the tooltip.
 
+### Fixed
+- **Low battery warning repeated every 5 seconds** (thousands of saved notifications): it now warns once per
+  discharge below 15 % and again only after charging.
+
 ### Upgrade note
 - Tooltips need the new dwm: the update rebuilds it (or sidebar → ⚙ Settings → DWM → Rebuild).
 

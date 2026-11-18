@@ -76,9 +76,13 @@ bat() {
 	esac
 	printf '\x06%s %s%%\x06' "$icon" "$c"
 	# low battery warning (once per drop below 15%)
-	if [ "$s" = Discharging ] && [ "$c" -le 15 ] && [ -z "$warned" ]; then
-		notify-send -u critical "Battery low" "${c}% remaining"; warned=1
-	elif [ "$c" -gt 15 ]; then warned=; fi
+	# a flag file, not a variable: items run in a subshell, so a variable was forgotten and it warned every 5 s
+	local flag="${XDG_RUNTIME_DIR:-/tmp}/dwm-status.batwarn"
+	if [ "$s" = Discharging ] && [ "$c" -le 15 ]; then
+		[ -e "$flag" ] || { notify-send -u critical -h string:x-dunst-stack-tag:dwm-battery "Battery low" "${c}% remaining"; touch "$flag"; }
+	else
+		rm -f "$flag"
+	fi
 }
 
 clk() {
