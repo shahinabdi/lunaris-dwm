@@ -153,7 +153,7 @@ locked() { exec 8>"$RUN/bright.lock"; flock 8; "$@"; }
 
 doctor() {
 	command -v ddcutil >/dev/null || { echo "ddcutil is not installed (Arch: pacman -S ddcutil · Gentoo: emerge app-misc/ddcutil with USE=user-permissions)"; }
-	ls /dev/i2c-* >/dev/null 2>&1 || echo "no /dev/i2c-*: load the module: sudo modprobe i2c-dev (and at boot: echo i2c-dev | sudo tee /etc/modules-load.d/i2c-dev.conf)"
+	ls /dev/i2c-* >/dev/null 2>&1 || echo "no /dev/i2c-*: load the module: sudo modprobe i2c-dev (and at boot: sudo mkdir -p /etc/modules-load.d; echo i2c-dev | sudo tee /etc/modules-load.d/i2c-dev.conf)"
 	for d in /dev/i2c-*; do [ -e "$d" ] && { [ -r "$d" ] && [ -w "$d" ] || { echo "no access to $d: add yourself to the i2c group (sudo usermod -aG i2c $USER) and log in again"; break; }; }; done
 	command -v ddcutil >/dev/null && ddcutil detect --terse 2>&1 | sed 's/^/  /'
 	echo "monitors found:"; refresh; list | sed 's/^/  /'
