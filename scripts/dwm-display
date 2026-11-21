@@ -6,7 +6,8 @@
 #   dwm-display font +|-|<size>             font size everywhere: kitty, GTK (live), Qt, rofi, notifications
 #   dwm-display res <WxH>|auto              screen resolution (asks to keep it, reverts after 15 s)
 #   dwm-display menu | res-menu             rofi menus                             (Mod+Shift+d)
-#   dwm-display apply                       re-apply saved resolution + scale at login (~/.xinitrc)
+#   dwm-display apply                       at login (~/.xinitrc): the saved monitor layout (dwm-monitor
+#                                           default / startup), else the saved resolution + scales
 #   dwm-display reset                       scale 100%, native resolution, font 14, bar 1×
 #   dwm-display status                      print "scale=… scales=out:pct,… font=… res=… modes=…"
 #
@@ -199,7 +200,9 @@ case $1 in
 	res)      res "$2" ;;
 	res-menu) res_menu ;;
 	menu|"")  menu ;;
-	apply)    [ "$RES" != auto ] || [ -n "$SCALES" ] && apply_mode ;;
+	apply)    # login: a saved monitor layout (the default one first) wins; else the saved resolution + scales
+	          dwm-monitor startup >/dev/null 2>&1 && exit 0
+	          [ "$RES" != auto ] || [ -n "$SCALES" ] && apply_mode ;;
 	status)   echo "scale=$(live_scale "$(output)" | grep . || echo "$SCALE") scales=$(live_scales) bar=$(xrdb -query | awk '/^dwm.barscale:/{print $2}' | grep . || echo 1) barh=$(xwininfo -root -tree 2>/dev/null | grep -m1 '("dwm" "dwm")' | grep -oE ' [0-9]+x[0-9]+\+' | head -1 | tr -d + | cut -dx -f2 | grep . || echo 28) font=$(font_size) res=$(cur_res) modes=$(modes | paste -sd,)" ;;
 	*) sed -n '2,21p' "$0" >&2; exit 1 ;;
 esac
