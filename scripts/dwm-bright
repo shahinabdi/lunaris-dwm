@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# dwm-bright — brightness of every screen for Lunaris: the laptop panel (backlight, brightnessctl) and
+# external monitors (DDC/CI over I²C, ddcutil), each on its own.
+#
+#   dwm-bright list                  one line per screen (used by the sidebar):  id|kind|name|percent
+#                                    id = xrandr output (HDMI-A-0, DisplayPort-1…) or "backlight"
+#   dwm-bright set <id|all> <pct|+N|-N>   e.g. set HDMI-A-0 40, set all +10
+#   dwm-bright up | down [step]      every screen (brightness keys), default step 5
+#   dwm-bright refresh               re-detect monitors and re-read their brightness (slow: ~1 s)
+#   dwm-bright doctor                why a monitor can't be controlled
+#
+# External monitors need: ddcutil, the i2c-dev kernel module loaded, access to /dev/i2c-* (udev rule
+# from ddcutil, or the i2c group) and DDC/CI switched on in the monitor's own menu (most have it on).
+# Reading a monitor over DDC is slow, so values are cached in $XDG_RUNTIME_DIR/lunaris/bright
+# ("list" reads the cache; "refresh" and "set" update it).
+
+RUN=${XDG_RUNTIME_DIR:-/tmp/lunaris-$UID}/lunaris
+MAP=$RUN/bright.map       # bus|output|model   (from ddcutil detect + EDID matching)
+VAL=$RUN/bright.values    # id|percent
+mkdir -p "$RUN"
+DDC=(ddcutil --noverify --sleep-multiplier 0.5)
+
+note() { notify-send -t 1200 -h string:x-dunst-stack-tag:dwm-osd -h "int:value:$2" "$1" 2>/dev/null; }   # same OSD as volume
+has_backlight() { ls -d /sys/class/backlight/* >/dev/null 2>&1 && command -v brightnessctl >/dev/null; }
+has_ddc() { command -v ddcutil >/dev/null && ls /dev/i2c-* >/dev/null 2>&1; }
+
+# ddcutil display (I²C bus) -> xrandr output, matched by EDID (two identical monitors still differ by serial)
+detect() {
+	: > "$MAP.tmp"
+	if has_ddc; then
+		ddcutil detect --terse 2>/dev/null | python3 -c '
+import sys, re, subprocess, glob, os
+# EDID of every xrandr output
+edid, cur, buf, on = {}, None, [], False
+for line in subprocess.run(["xrandr", "--prop"], capture_output=True, text=True).stdout.splitlines():
+    m = re.match(r"^(\S+) (?:connected|disconnected)", line)
+    if m:
+        if cur and buf: edid[cur] = "".join(buf)
+        cur, buf, on = m.group(1), [], False
+        continue
+    s = line.strip()
+    if s.startswith("EDID:"): on = True; continue
+    if on:
+        if re.fullmatch(r"[0-9a-f]{32}", s): buf.append(s); continue
+        on = False
+if cur and buf: edid[cur] = "".join(buf)
+by_edid = {}
+for out, e in edid.items(): by_edid.setdefault(e[:256], []).append(out)
+def sysfs_edid(conn):
+    try: return open(f"/sys/class/drm/{conn}/edid", "rb").read().hex()[:256]
+    except OSError: return ""
+def bus_edid(bus):   # i2c bus -> DRM connector through sysfs (ddc symlink)
+    for c in glob.glob("/sys/class/drm/card*-*"):
+        ddc = os.path.join(c, "ddc")
+        if os.path.exists(ddc) and os.path.realpath(ddc).endswith("/" + bus): return sysfs_edid(os.path.basename(c))
+        for sub in glob.glob(os.path.join(c, "i2c-*")):
+            if os.path.basename(sub) == bus: return sysfs_edid(os.path.basename(c))
+    return ""
+used, disp = set(), {}
+for line in sys.stdin.read().split("\n"):
+    s = line.strip()
+    if s.startswith("Display ") or s.startswith("Invalid display"):
+        disp = {"ok": s.startswith("Display ")}
+    elif s.startswith("I2C bus:"): disp["bus"] = s.split("/dev/i2c-")[-1]
+    elif s.startswith("DRM connector:") or s.startswith("DRM_connector:"): disp["conn"] = s.split(":", 1)[1].strip()
+    elif s.startswith("Monitor:") and disp.get("ok") and "bus" in disp:
+        model = s.split(":", 1)[1].strip().split(":")
+        model = model[1] if len(model) > 1 else model[0]
+        e = sysfs_edid(disp["conn"]) if disp.get("conn") else bus_edid("i2c-" + disp["bus"])
+        out = next((o for o in by_edid.get(e, []) if o not in used), "") if e else ""
+        if out: used.add(out)
+        b = disp["bus"]
+        print(b + "|" + (out or "ddc-" + b) + "|" + model)
+        disp = {}
+' > "$MAP.tmp"
+	fi
+	mv "$MAP.tmp" "$MAP"
+}
+
+bus_of() { awk -F'|' -v o="$1" '$2==o{print $1; exit}' "$MAP" 2>/dev/null; }
+ids() { has_backlight && echo backlight; [ -s "$MAP" ] && cut -d'|' -f2 "$MAP"; }
+
+read_one() { # <id> -> percent (from the device)
+	local b
+	if [ "$1" = backlight ]; then
+		brightnessctl -m -c backlight 2>/dev/null | cut -d, -f4 | tr -d % | head -1
+	else
+		b=$(bus_of "$1") || return 1
+		[ -n "$b" ] || return 1
+		"${DDC[@]}" --bus "$b" getvcp 10 --brief 2>/dev/null | awk '$1=="VCP" && $3=="C" && $5>0 {print int($4*100/$5)}'
+	fi
+}
+cached() { awk -F'|' -v i="$1" '$1==i{print $2; exit}' "$VAL" 2>/dev/null; }
+store() { # <id> <pct>
+	{ grep -v "^$1|" "$VAL" 2>/dev/null; echo "$1|$2"; } > "$VAL.tmp" && mv "$VAL.tmp" "$VAL"
+}
+
+refresh() {
+	local i v
+	detect
+	: > "$VAL"
+	for i in $(ids); do v=$(read_one "$i"); [ -n "$v" ] && store "$i" "$v"; done
+}
+
+list() {
+	[ -f "$MAP" ] || refresh
+	local i v name kind
+	for i in $(ids); do
+		if [ "$i" = backlight ]; then kind=backlight name="Laptop screen"; v=$(read_one backlight)
+		else kind=ddc name=$(awk -F'|' -v o="$i" '$2==o{print $3; exit}' "$MAP"); v=$(cached "$i")
+		fi
+		echo "$i|$kind|${name:-$i}|${v:-?}"
+	done
+}
+
+set_one() { # <id> <pct|+N|-N>  -> prints the new percent
+	local cur new b
+	case $2 in
+		+*|-*) cur=$(cached "$1"); [ -n "$cur" ] || cur=$(read_one "$1"); new=$(( ${cur:-50} $2 )) ;;
+		*) new=$2 ;;
+	esac
+	(( new < 1 )) && new=1; (( new > 100 )) && new=100
+	if [ "$1" = backlight ]; then
+		brightnessctl -q -c backlight set "$new%" || return 1
+	else
+		b=$(bus_of "$1"); [ -n "$b" ] || { echo "$1: not a DDC monitor (dwm-bright doctor)" >&2; return 1; }
+		"${DDC[@]}" --bus "$b" setvcp 10 "$new" >/dev/null 2>&1 || return 1
+	fi
+	echo "$new"
+}
+
+set_cmd() { # <id|all> <value>
+	local i n last pids=()   # store happens here, not in the parallel set_one
+	[[ $2 =~ ^[+-]?[0-9]+$ ]] || { echo "set <id|all> <pct|+N|-N>" >&2; exit 1; }
+	[ -f "$MAP" ] || refresh
+	if [ "$1" = all ]; then
+		# monitors answer slowly: set them all at the same time
+		for i in $(ids); do set_one "$i" "$2" > "$RUN/bright.$i.out" & pids+=($!); done
+		wait "${pids[@]}" 2>/dev/null
+		for i in $(ids); do
+			n=$(cat "$RUN/bright.$i.out" 2>/dev/null); rm -f "$RUN/bright.$i.out"
+			[ -n "$n" ] && { store "$i" "$n"; last=$n; }
+		done
+		echo "${last:-}"
+	else
+		n=$(set_one "$1" "$2") || exit 1
+		store "$1" "$n"; echo "$n"
+	fi
+}
+
+# one adjustment at a time (keys held down / slider dragged): newer requests replace waiting ones
+locked() { exec 8>"$RUN/bright.lock"; flock 8; "$@"; }
+
+doctor() {
+	command -v ddcutil >/dev/null || { echo "ddcutil is not installed (Arch: pacman -S ddcutil · Gentoo: emerge app-misc/ddcutil with USE=user-permissions)"; }
+	ls /dev/i2c-* >/dev/null 2>&1 || echo "no /dev/i2c-*: load the module: sudo modprobe i2c-dev (and at boot: echo i2c-dev | sudo tee /etc/modules-load.d/i2c-dev.conf)"
+	for d in /dev/i2c-*; do [ -e "$d" ] && { [ -r "$d" ] && [ -w "$d" ] || { echo "no access to $d: add yourself to the i2c group (sudo usermod -aG i2c $USER) and log in again"; break; }; }; done
+	command -v ddcutil >/dev/null && ddcutil detect --terse 2>&1 | sed 's/^/  /'
+	echo "monitors found:"; refresh; list | sed 's/^/  /'
+	echo "If a monitor is listed as \"Invalid display\": turn on DDC/CI in its on-screen menu."
+}
+
+case $1 in
+	list)    list ;;
+	refresh) refresh; list ;;
+	set)     locked set_cmd "$2" "$3" ;;
+	up|down) n=$(locked set_cmd all "$([ "$1" = up ] && echo +"${2:-5}" || echo -"${2:-5}")"); [ -n "$n" ] && note "Brightness" "$n" ;;
+	doctor)  doctor ;;
+	*) sed -n '2,18p' "$0" >&2; exit 1 ;;
+esac
