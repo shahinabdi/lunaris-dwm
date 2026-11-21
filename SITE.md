@@ -18,6 +18,8 @@ Install the Xlib development headers, adjust `config.mk` for your system, then b
 make clean install
 ```
 
+Runs on Arch Linux and on Gentoo with OpenRC + elogind (see [GENTOO.md](https://github.com/shahinabdi/lunaris/blob/main/GENTOO.md)).
+
 For the Lunaris startup setup, see [`.xinitrc`](./.xinitrc). The complete desktop configuration and installer live in the companion [Lunaris repository](https://github.com/shahinabdi/lunaris).
 
 See the [README](./README) for configuration and usage details, and the [changelog](./CHANGELOG.md) for release history.

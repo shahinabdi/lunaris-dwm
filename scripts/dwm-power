@@ -12,13 +12,20 @@ lock() {
 	for _ in $(seq 20); do pgrep -x i3lock >/dev/null && break; sleep 0.1; done
 }
 
+# systemd (Arch): systemctl — OpenRC + elogind (Gentoo): loginctl does suspend / reboot / poweroff
+sysctl() {
+	if [ -d /run/systemd/system ]; then systemctl "$@"
+	elif command -v loginctl >/dev/null; then loginctl "$@"
+	else notify-send -u critical "Power" "Neither systemd nor elogind found: can't $1" 2>/dev/null; return 1; fi
+}
+
 act() {
 	case $1 in
 		lock)     lock ;;
-		suspend)  lock; sleep 0.3; systemctl suspend ;;
+		suspend)  lock; sleep 0.3; sysctl suspend ;;
 		logout)   pkill -x dwm ;;
-		reboot)   systemctl reboot ;;
-		shutdown) systemctl poweroff ;;
+		reboot)   sysctl reboot ;;
+		shutdown) sysctl poweroff ;;
 		*) echo "usage: dwm-power {lock|suspend|logout|reboot|shutdown|menu|quit}" >&2; exit 1 ;;
 	esac
 }

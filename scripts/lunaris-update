@@ -10,10 +10,14 @@
 #                                      its source changed (asks for your password), restart dwm in place
 #   lunaris-update gui                 run "apply" in a terminal window (sidebar / notification button)
 #   lunaris-update timer on|off|status the automatic check every Tuesday
+#   lunaris-update autocheck [--loop] check now if this week's check (Tuesday 10:00) is due; --loop: keep
+#                                      doing that every hour (started by ~/.xinitrc when there is no systemd)
 #
 # Local changes are never overwritten: a repo with uncommitted changes stops the update.
 # Config files you edited are backed up as <file>.bak-<date> before an updated version replaces them.
 # Folders: ~/.config/lunaris.conf (LUNARIS_DIR, written by install.sh) and ~/.config/dwm-dev.conf (DWM_DIR).
+# The weekly check: systemd (Arch) -> lunaris-update.timer; OpenRC (Gentoo) -> AUTOCHECK=1|0 in
+# ~/.config/lunaris.conf and "autocheck --loop" in the X session.
 
 set -uo pipefail
 shopt -u patsub_replacement 2>/dev/null
@@ -24,7 +28,7 @@ NOTES=$CACHE/update-notes.md
 STAMP=$(date +%Y%m%d-%H%M%S)
 DRY=0
 
-LUNARIS_DIR="" DWM_DIR=""
+LUNARIS_DIR="" DWM_DIR="" AUTOCHECK=1
 [ -r "$HOME/.config/lunaris.conf" ] && . "$HOME/.config/lunaris.conf"
 [ -r "$HOME/.config/dwm-dev.conf" ] && . "$HOME/.config/dwm-dev.conf"
 LUNARIS_DIR=${LUNARIS_DIR:-$HOME/lunaris}
@@ -168,7 +172,7 @@ apply() {
 		# in a dry run the files are not pulled yet: show which ones would be deployed
 		git -C "$LUNARIS_DIR" diff --name-only "$old_l" "$new_l" -- home/ | sed 's|^home/|    [dry] would update ~/|'
 	fi
-	git -C "$LUNARIS_DIR" diff --name-only "$old_l" "$new_l" -- home/.config/systemd | grep -q . &&
+	[ -d /run/systemd/system ] && git -C "$LUNARIS_DIR" diff --name-only "$old_l" "$new_l" -- home/.config/systemd | grep -q . &&
 		run systemctl --user daemon-reload
 	git -C "$LUNARIS_DIR" diff --name-only "$old_l" "$new_l" -- home/.config/dunst | grep -q . &&
 		{ run dunstctl reload 2>/dev/null || true; }
@@ -224,8 +228,56 @@ apply() {
 }
 
 # ---------------------------------------------------------------- timer
+has_systemd() { [ -d /run/systemd/system ]; }
+
+# this week's check time: the last Tuesday 10:00 that has passed (epoch seconds)
+last_due() {
+	local now back t
+	now=$(date +%s); back=$(( ($(date +%u) - 2 + 7) % 7 ))
+	t=$(date -d "$(date -d "$back days ago" +%F) 10:00" +%s)
+	(( t > now )) && t=$(( t - 7 * 86400 ))
+	echo "$t"
+}
+check_due() {
+	local checked; checked=$(state_get checked); checked=${checked:-0}
+	(( checked < $(last_due) )) || [ -n "$(state_get error)" ]
+}
+
+# no systemd: AUTOCHECK=1|0 in ~/.config/lunaris.conf, "autocheck --loop" runs in the X session
+set_autocheck() {
+	local f=$HOME/.config/lunaris.conf
+	mkdir -p "$(dirname "$f")"; touch "$f"
+	sed -i '/^AUTOCHECK=/d' "$f"; echo "AUTOCHECK=$1" >> "$f"
+	AUTOCHECK=$1
+}
+
+autocheck() {
+	[ "${1:-}" = --loop ] || { [ "$AUTOCHECK" = 1 ] && check_due && check --notify >/dev/null; return 0; }
+	local lock=${XDG_RUNTIME_DIR:-/tmp}/lunaris-autocheck.lock
+	exec 9>"$lock"; flock -n 9 || exit 0   # one loop per user
+	sleep 60   # let the network come up after login
+	while :; do
+		AUTOCHECK=1; . "$HOME/.config/lunaris.conf" 2>/dev/null   # toggled from the sidebar meanwhile?
+		[ "$AUTOCHECK" = 1 ] && check_due && check --notify >/dev/null
+		sleep 3600
+	done
+}
+
 timer() {
 	local unit=lunaris-update.timer
+	if ! has_systemd; then
+		case ${1:-status} in on) set_autocheck 1 ;; off) set_autocheck 0 ;; esac
+		if [ "$AUTOCHECK" = 1 ]; then
+			local n checked; n=$(last_due); checked=$(state_get checked)
+			if (( ${checked:-0} >= n )); then n=$(( n + 7 * 86400 ))
+			else n=$(( $(date +%s) + 3600 )); fi   # overdue: within the hour (or at the next login)
+			echo "timer=1"
+			echo "next=$(date -d "@$n" '+%a %Y-%m-%d %H:%M:%S %Z')"
+		else
+			echo "timer=0"
+		fi
+		return
+	fi
 	case ${1:-status} in
 		on)  systemctl --user enable --now "$unit" >/dev/null 2>&1 ;;
 		off) systemctl --user disable --now "$unit" >/dev/null 2>&1 ;;
@@ -246,5 +298,6 @@ case ${1:-status} in
 	gui)    exec dwm-term --class lunaris-update --title "Lunaris update" -e sh -c \
 	            "'$0' apply; printf '\nPress Enter to close.'; read _" ;;
 	timer)  timer "${2:-status}" ;;
-	*)      sed -n '2,18p' "$0" >&2; exit 1 ;;
+	autocheck) autocheck "${2:-}" ;;
+	*)      sed -n '2,20p' "$0" >&2; exit 1 ;;
 esac
