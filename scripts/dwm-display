@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # dwm-display — scaling, font size and resolution (Omarchy-style) for Lunaris on X11.
 #
-#   dwm-display scale 100|125|150|175|200   scale the WHOLE screen now (xrandr; bar, apps, menus)
+#   dwm-display scale <pct> [<out>|all]     scale ONE screen (default: the primary) or all of them
+#                                           (xrandr per output: bar, apps, menus on that screen; 100-250)
 #   dwm-display font +|-|<size>             font size everywhere: kitty, GTK (live), Qt, rofi, notifications
 #   dwm-display res <WxH>|auto              screen resolution (asks to keep it, reverts after 15 s)
 #   dwm-display menu | res-menu             rofi menus                             (Mod+Shift+d)
 #   dwm-display apply                       re-apply saved resolution + scale at login (~/.xinitrc)
 #   dwm-display reset                       scale 100%, native resolution, font 14, bar 1×
-#   dwm-display status                      print "scale=… font=… res=… modes=…"
+#   dwm-display status                      print "scale=… scales=out:pct,… font=… res=… modes=…"
 #
-# Saved settings: ~/.config/dwm-display.conf
+# Every screen has its own scale (a 4K panel at 175 %, the others at 100 %…); the other screens are
+# moved so they still touch it (dwm-monitor solves the layout). The bar on each screen follows its scale;
+# "Bar size" (dwm-display bar) is an extra multiplier for the bar on every screen.
+#
+# Saved settings: ~/.config/dwm-display.conf  (SCALES="<out>=<pct> …", RES = primary resolution;
+# SCALE is the old single scale, read as the primary's scale when SCALES is empty)
 # Live GTK settings: ~/.config/xsettingsd/xsettingsd.conf (xsettingsd is started from ~/.xinitrc)
 
 CONF="$HOME/.config/dwm-display.conf"
@@ -20,39 +26,56 @@ ROFI="$HOME/.config/rofi/config.rasi"
 DUNST="$HOME/.config/dunst/dunstrc"
 XSET="$HOME/.config/xsettingsd/xsettingsd.conf"
 
-SCALE=100 RES=auto
+SCALE=100 SCALES="" RES=auto
 [ -r "$CONF" ] && . "$CONF"
 
-save() { printf 'SCALE=%s\nRES=%s\n' "$SCALE" "$RES" > "$CONF"; }
+save() { printf 'SCALE=%s\nSCALES=%q\nRES=%s\n' "$SCALE" "$SCALES" "$RES" > "$CONF"; }
 note() { notify-send -t 2500 -h string:x-dunst-stack-tag:dwm-display "$@" 2>/dev/null; }
 output() { xrandr --query | awk '/ connected primary/{print $1; exit} / connected/ && !o {o=$1} END{if(o)print o}' | head -1; }
 cur_res() { xrandr --query | awk -v o="$(output)" '$1==o{f=1;next} f&&/^ /&&/\*/{print $1; exit} f&&!/^ /{exit}'; }
 native() { xrandr --query | awk -v o="$(output)" '$1==o{f=1;next} f&&/^ /&&/\+/{print $1; exit} f&&!/^ /{exit}'; }
 modes() { xrandr --query | awk -v o="$(output)" '$1==o{f=1;next} f&&/^ /{print $1; next} f{exit}' | awk '!seen[$0]++'; }
 font_size() { awk '/^font_size/{print $2+0; exit}' "$KITTY" 2>/dev/null; }
-wallpaper() { dwm-wall restore --no-slideshow 2>/dev/null; }
+enabled() { xrandr --listactivemonitors | awk 'NR>1{print $NF}'; }
 
-# set mode ($1 or saved/native) and the whole-screen scale in one xrandr call
+# per-screen scales: saved ("<out>=<pct> …"; old configs: SCALE belongs to the primary) and live (xrandr)
+[ -z "$SCALES" ] && (( SCALE != 100 )) && SCALES="$(output)=$SCALE"
+saved_scale() { local kv; for kv in $SCALES; do [ "${kv%%=*}" = "$1" ] && { echo "${kv#*=}"; return; }; done; echo 100; }
+set_saved() { # <out> <pct>
+	local kv list=""
+	for kv in $SCALES; do [ "${kv%%=*}" = "$1" ] || list+="$kv "; done
+	(( $2 == 100 )) || list+="$1=$2"
+	SCALES=$(echo $list)
+}
+live_scales() { # primary first
+	dwm-monitor geom 2>/dev/null | awk -F'|' -v p="$(output)" '$1==p{f=$1":"$2; next} {r=r","$1":"$2} END{print f r}'
+}
+live_scale() { dwm-monitor geom 2>/dev/null | awk -F'|' -v o="$1" '$1==o{print $2; exit}'; }
+
+# saved resolution (primary) + every screen's saved scale, in one xrandr call (dwm-monitor lays them out)
+# $1 = resolution for the primary (default: the saved one)
 apply_mode() {
-	local out mode w h
+	local out mode o args=()
 	out=$(output)
 	mode=${1:-$RES}; [ "$mode" = auto ] && mode=$(native)
-	w=${mode%x*}; h=${mode#*x}
-	if (( SCALE == 100 )); then
-		xrandr --output "$out" --mode "$mode" --scale 1x1
-	else
-		# render a smaller desktop and stretch it to the panel => everything is bigger
-		xrandr --output "$out" --mode "$mode" --scale-from "$(( w * 100 / SCALE ))x$(( h * 100 / SCALE ))"
-	fi
-	wallpaper
+	[ -n "$mode" ] && [ "$mode" != "$(cur_res)" ] && args+=("$out=mode:$mode")
+	for o in $(enabled); do args+=("$o=scale:$(saved_scale "$o")"); done
+	dwm-monitor arrange "${args[@]}"
 }
 
-scale() {
-	local pct=$1
+scale() { # <pct> [<out>|all]
+	local pct=$1 target=${2:-$(output)} o
 	[[ $pct =~ ^[0-9]+$ ]] && (( pct >= 100 && pct <= 250 )) || { echo "scale: 100-250" >&2; exit 1; }
-	SCALE=$pct; save
+	if [ "$target" = all ]; then
+		for o in $(enabled); do set_saved "$o" "$pct"; done
+	else
+		enabled | grep -qx -- "$target" || { echo "scale: $target is not an enabled screen" >&2; exit 1; }
+		set_saved "$target" "$pct"
+	fi
+	[ "$target" = "$(output)" ] || [ "$target" = all ] && SCALE=$pct
+	save
 	apply_mode
-	note "Display scale ${pct}%" "Whole screen scaled."
+	note "Display scale ${pct}%" "$([ "$target" = all ] && echo "Every screen" || echo "$target") scaled; other screens unchanged."
 }
 
 # shift the trailing number of "key=… N" lines by $D (min 6)
@@ -120,13 +143,21 @@ res_menu() {
 menu() {
 	local c
 	c=$(printf '%s\n' \
-		"󰁌  Scale  (${SCALE}%)" \
+		"󰁌  Scale  ($(live_scales | sed 's/,/ · /g'))" \
 		"󰛖  Font size  ($(font_size))" \
 		"󰍹  Resolution  ($(cur_res))" |
 		rofi -dmenu -i -p "󰍹 display" -format i) || exit 0
 	case $c in
-		0) c=$(printf '%s\n' 100 125 150 175 200 | sed "s/^$SCALE\$/$SCALE  (current)/" |
-		       rofi -dmenu -i -p "Scale %") || exit 0; scale "${c%% *}" ;;
+		0) local scr=$(output) cur
+		   if (( $(enabled | wc -l) > 1 )); then
+			   scr=$( { output; enabled | grep -vx -- "$(output)"; echo all; } | while read -r o; do
+				   [ "$o" = all ] && echo "all  (every screen)" || echo "$o  ($(live_scale "$o")%)"; done |
+				   rofi -dmenu -i -p "Scale which screen?") || exit 0
+			   scr=${scr%% *}
+		   fi
+		   cur=$([ "$scr" = all ] && echo "" || live_scale "$scr")
+		   c=$(printf '%s\n' 100 125 150 175 200 | sed "s/^$cur\$/$cur  (current)/" |
+		       rofi -dmenu -i -p "Scale % ($scr)") || exit 0; scale "${c%% *}" "$scr" ;;
 		1) c=$(printf '%s\n' "+ bigger" "- smaller" 10 11 12 13 14 15 16 18 20 |
 		       rofi -dmenu -i -p "Font size (now $(font_size))") || exit 0; font "${c%% *}" ;;
 		2) res_menu ;;
@@ -152,23 +183,23 @@ barscale() {
 	note "Bar size ${k}×" "dwm restarted in place."
 }
 
-reset() { # defaults: scale 100%, native resolution, font 14, bar 1x (last: restarts dwm)
-	SCALE=100 RES=auto; save
+reset() { # defaults: every screen 100%, native resolution, font 14, bar 1x (last: restarts dwm)
+	SCALE=100 SCALES="" RES=auto; save
 	apply_mode
 	[ "$(font_size)" = 14 ] || font 14
 	barscale 1
-	note "Display reset" "scale 100% · native resolution · font 14 · bar 1×"
+	note "Display reset" "every screen 100% · native resolution · font 14 · bar 1×"
 }
 
 case $1 in
 	reset)    reset ;;
 	bar)      barscale "$2" ;;
-	scale)    scale "$2" ;;
+	scale)    scale "$2" "$3" ;;
 	font)     font "$2" ;;
 	res)      res "$2" ;;
 	res-menu) res_menu ;;
 	menu|"")  menu ;;
-	apply)    [ "$RES" != auto ] || (( SCALE != 100 )) && apply_mode ;;
-	status)   echo "scale=$SCALE bar=$(xrdb -query | awk '/^dwm.barscale:/{print $2}' | grep . || echo 1) barh=$(xwininfo -root -tree 2>/dev/null | grep -m1 '("dwm" "dwm")' | grep -oE ' [0-9]+x[0-9]+\+' | head -1 | tr -d + | cut -dx -f2 | grep . || echo 28) font=$(font_size) res=$(cur_res) modes=$(modes | paste -sd,)" ;;
-	*) sed -n '2,12p' "$0" >&2; exit 1 ;;
+	apply)    [ "$RES" != auto ] || [ -n "$SCALES" ] && apply_mode ;;
+	status)   echo "scale=$(live_scale "$(output)" | grep . || echo "$SCALE") scales=$(live_scales) bar=$(xrdb -query | awk '/^dwm.barscale:/{print $2}' | grep . || echo 1) barh=$(xwininfo -root -tree 2>/dev/null | grep -m1 '("dwm" "dwm")' | grep -oE ' [0-9]+x[0-9]+\+' | head -1 | tr -d + | cut -dx -f2 | grep . || echo 28) font=$(font_size) res=$(cur_res) modes=$(modes | paste -sd,)" ;;
+	*) sed -n '2,21p' "$0" >&2; exit 1 ;;
 esac

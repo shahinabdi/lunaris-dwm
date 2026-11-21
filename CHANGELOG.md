@@ -13,6 +13,31 @@ Update an existing install: sidebar → ⚙ Settings → **Updates**, or `lunari
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Per-screen scaling**: every monitor has its own scale (e.g. a 4K panel at 175 %, the others at 100 %) instead of
+  one scale for the primary only. Sidebar → ⚙ Settings → **Screen & bar** (pick the screen, then the scale) or
+  **Monitors** (a scale row on each screen); `Mod+Shift+d` asks which screen; `dwm-display scale 150 HDMI-A-0`
+  (`all` for every screen). The bar, windows and menus on that screen follow its scale; scales are saved per output
+  and re-applied at login.
+- **Drag screens with the mouse**: the arrangement map in Settings → Monitors is now interactive: drag a screen and it
+  snaps (magnet) to the other screens' edges and lines up with their edges or centres; drop it and the layout is
+  applied. A screen dropped in empty space sticks to the nearest one, overlaps are pushed apart.
+  `dwm-monitor set <out>=<x>,<y> …` does the same from a terminal.
+
+### Changed
+- When a screen changes size (scale or resolution) the others are moved so screens that touched still touch, on the
+  same side and with the same alignment, and none overlap (before: the others kept their position, leaving gaps or
+  overlapping screens).
+
+### Fixed
+- **Wallpaper spread over all the screens** when `feh` is built without Xinerama (Gentoo's default): `dwm-wall` now draws
+  each screen's part itself (python-pillow) so every screen gets the whole image (fill / fit / center / tile per screen).
+- Monitors: the resolution of a scaled screen was shown as its scaled size (e.g. 2194x1234 instead of 3840x2160).
+
+---
+
 ## [0.10.0] — 2026-11-14 · Calendar, bar tooltips, CPU & RAM on the bar
 
 ### Added
