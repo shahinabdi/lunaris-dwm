@@ -74,7 +74,7 @@ dwm-font menu|Same from rofi (terminal: dwm-font set terminal "FiraCode Nerd Fon
 #System
 Volume keys|Volume up / down / mute
 Mic-mute key|Mute microphone (noise-cancelling mic is default)
-Brightness keys|Brightness up / down
+Brightness keys|Brightness up / down (laptop panel and external monitors)
 Mod + Space|Switch keyboard layout (@LAYS@)
 Mod + Shift + k|Reset keyboard layouts (back to @L1@)
 Mod + Shift + x|Lock screen

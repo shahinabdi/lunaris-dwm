@@ -50,8 +50,8 @@ case $1 in
 	                 osd "Microphone" "$(mic_pct)" ;;
 	mic-up)      wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0; wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SOURCE@ 5%+; osd "Microphone" "$(mic_pct)" ;;
 	mic-down)    wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 5%-; osd "Microphone" "$(mic_pct)" ;;
-	bright-up)   brightnessctl -q set 5%+; osd "Brightness" "$(brightnessctl -m | cut -d, -f4 | tr -d %)" ;;
-	bright-down) brightnessctl -q -n 1% set 5%-; osd "Brightness" "$(brightnessctl -m | cut -d, -f4 | tr -d %)" ;;
+	bright-up)   dwm-bright up ;;     # laptop panel and/or external monitors (DDC/CI)
+	bright-down) dwm-bright down ;;
 	net-menu)    net_menu ;;
 	kb-reset)    lay=$(dwm-keyboard get layouts 2>/dev/null || echo fr,ir); setxkbmap -layout "$lay"
 	             notify-send -t 1500 -h string:x-dunst-stack-tag:dwm-kb "Keyboard" "Layouts reset ($lay) — now ${lay%%,*}" ;;
