@@ -2,10 +2,11 @@
 # dwm-monitor — monitors for Lunaris (xrandr + autorandr), Sway-like hotplug.
 #
 #   dwm-monitor list                   one line per connected output (used by the sidebar):
-#                                      name|on|primary|mode WxH|rate|x|y|modes(csv)|model|scale%|logical WxH
+#                                      name|on|primary|mode WxH|rate|x|y|modes(csv)|model|scale%|logical WxH|
+#                                      all modes with their rates (WxH@r1/r2;…)|exact current rate
 #   dwm-monitor on <out> [WxH]         enable (placed right of the primary by default)
 #   dwm-monitor off <out>              disable (never the last enabled one)
-#   dwm-monitor mode <out> <WxH>       resolution (highest refresh rate for it)
+#   dwm-monitor mode <out> <WxH> [Hz]  resolution, at this refresh rate (default: the highest for it)
 #   dwm-monitor scale <out> <100-250>  this screen's scale (zoom); the others stay attached to it
 #   dwm-monitor set <out>=<x>,<y> ...  move screens (sidebar drag): overlaps are pushed apart and a
 #                                      screen left floating snaps to the nearest edge (magnet)
@@ -86,7 +87,7 @@ for line in sys.stdin:
             cur = dict(name=m.group(1), on=1 if m.group(4) else 0, primary=1 if m.group(3) else 0,
                        mode=f"{m.group(5)}x{m.group(6)}" if m.group(4) else "-", rate="-",
                        logical=f"{m.group(5)}x{m.group(6)}" if m.group(4) else "-",
-                       x=m.group(7) or "0", y=m.group(8) or "0", modes=[], model="")
+                       x=m.group(7) or "0", y=m.group(8) or "0", modes=[], model="", rates={}, ratenow="")
             outs.append(cur)
         continue
     if cur is None: continue
@@ -99,10 +100,12 @@ for line in sys.stdin:
     if mm and not line.startswith("\t"):
         res, rates = mm.group(1), mm.group(2)
         if res not in cur["modes"]: cur["modes"].append(res)
+        for r in re.findall(r"([\d.]+)", rates):          # every refresh rate of this resolution
+            if r not in cur["rates"].setdefault(res, []): cur["rates"][res].append(r)
         if "*" in rates:
             cur["mode"] = res                    # the real mode (the header shows the scaled size)
             r = re.search(r"([\d.]+)\*", rates)
-            if r: cur["rate"] = str(round(float(r.group(1))))
+            if r: cur["rate"] = str(round(float(r.group(1)))); cur["ratenow"] = r.group(1)
 if cur and edid_lines: cur["model"] = model("".join(edid_lines))
 def scale(o):
     try:
@@ -112,7 +115,9 @@ def scale(o):
         return "100"
 for o in outs:
     print("|".join([o["name"], str(o["on"]), str(o["primary"]), o["mode"], o["rate"], o["x"], o["y"],
-                    ",".join(o["modes"][:6]), o["model"] or o["name"], scale(o), o["logical"]]))
+                    ",".join(o["modes"][:6]), o["model"] or o["name"], scale(o), o["logical"],
+                    ";".join(m + "@" + "/".join(sorted(o["rates"].get(m, []), key=float, reverse=True)) for m in o["modes"]),
+                    o["ratenow"] or "-"]))
 '
 }
 
@@ -380,7 +385,7 @@ case $1 in
 		[ "$(enabled | wc -l)" -le 1 ] && enabled | grep -qx "$2" && { note "$2 is the only screen — not turning it off"; exit 1; }
 		xrandr --output "$2" --off; after; note "$2 off" ;;
 	mode)
-		r=$(best_rate "$2" "$3")
+		r=${4:-$(best_rate "$2" "$3")}
 		arrange relayout "$2=mode:$3${r:+@$r}" && after && note "$2: $3${r:+ @ ${r%.*} Hz}" ;;
 	scale)
 		[[ $3 =~ ^[0-9]+$ ]] && (( $3 >= 100 && $3 <= 250 )) || { echo "scale <out> 100-250" >&2; exit 1; }
