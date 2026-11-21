@@ -12,6 +12,7 @@
 #   dwm-monitor arrange <out>=scale:<pct>|mode:<WxH> ...   several changes in one xrandr call
 #                                      (used by dwm-display), no notification
 #   dwm-monitor geom                   name|scale%|logical WxH per enabled screen
+#   dwm-monitor tearfree               AMD driver: TearFree on for scaled screens (no tearing), auto for others
 #   dwm-monitor primary <out>          make primary (bar status, sidebar, scaling follow it)
 #   dwm-monitor place <out> left|right|above|below|mirror   relative to the primary
 #   dwm-monitor detect                 apply the saved profile for what is plugged in, else extend
@@ -37,7 +38,21 @@ DEFAULT=""
 set_default() { printf 'DEFAULT=%q\n' "$1" > "$CONF"; DEFAULT=$1; }
 detected() { autorandr --detected 2>/dev/null | awk '{print $1}'; }
 note() { notify-send -t 2500 -h string:x-dunst-stack-tag:dwm-monitor "Monitors" "$*" 2>/dev/null; }
+# AMD's X driver (xf86-video-amdgpu, Gentoo's default for VIDEO_CARDS=amdgpu) copies a scaled screen to the
+# monitor on its own and that copy tears even under picom's vsync: TearFree on for scaled screens only (no extra
+# frame of latency on the others). Other drivers (modesetting: Arch's default) have no TearFree: nothing happens.
+tearfree() {
+	xrandr --verbose 2>/dev/null | awk '
+		/^[^ \t]+ connected/ { o = $1; t = "" }
+		/^\tTransform:/      { t = $2 }
+		/^\tTearFree:/       { if (o != "") print o, ((t + 0 > 0.9999 && t + 0 < 1.0001) ? "auto" : "on"), $2; o = "" }' |
+	while read -r out want now; do
+		[ "$want" = "$now" ] || xrandr --output "$out" --set TearFree "$want" 2>/dev/null
+	done
+}
+
 after() { # things that depend on the screen layout
+	tearfree
 	"$HOME/.local/bin/dwm-wall" restore --no-slideshow >/dev/null 2>&1
 	"$HOME/.local/bin/dwm-ctl" refresh >/dev/null 2>&1
 	# sidebar: recompute its position for the new layout (the sidebar itself calls this, so wait for it to close)
@@ -375,6 +390,7 @@ case $1 in
 	set)
 		shift; arrange place "$@" || exit 1; [ -n "${DWM_MONITOR_DRY:-}" ] || after ;;
 	geom) geom info ;;
+	tearfree) tearfree ;;
 	primary) xrandr --output "$2" --primary; after; note "$2 is now primary" ;;
 	place)
 		p=$(primary)
@@ -418,6 +434,7 @@ case $1 in
 		[ -z "$p" ] && p=$(detected | head -1)
 		[ -n "$p" ] || exit 1
 		autorandr --load "$p" >/dev/null 2>&1 || exit 1
+		tearfree   # a saved layout resets TearFree
 		echo "$p" ;;
 	auto)
 		case $2 in
