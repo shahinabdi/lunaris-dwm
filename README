@@ -2,6 +2,10 @@ Lunaris — dwm
 =============
 The window manager of Lunaris (https://lunaris.shahinabdi.com), a patched dwm 6.8.
 Install the whole desktop with https://github.com/shahinabdi/lunaris (install.sh).
+Arch Linux or Gentoo (OpenRC + elogind): see GENTOO.md in the lunaris repo. The scripts
+work with or without systemd: session services go through scripts/lunaris-svc
+(systemctl --user, or supervised processes of the X session), power actions use
+systemctl or elogind's loginctl.
 
 dwm - dynamic window manager
 ============================

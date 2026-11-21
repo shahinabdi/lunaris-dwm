@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# lunaris-svc — the session services of Lunaris (compositor, clipboard history, audio),
+# the same commands on every init system:
+#
+#   lunaris-svc start|restart|stop|status <service>
+#   lunaris-svc start-all          everything the session needs (run by ~/.xinitrc)
+#
+# Services: picom, clipmenud, pipewire
+#
+#   systemd (Arch)    -> systemctl --user (units in ~/.config/systemd/user)
+#   OpenRC (Gentoo)   -> started here as supervised background processes of the X session
+#                        (they stop with it). Logs: $XDG_RUNTIME_DIR/lunaris/<service>.log
+#                        pipewire uses Gentoo's gentoo-pipewire-launcher.
+
+SVC_ALL=(pipewire picom clipmenud)
+RUN=${XDG_RUNTIME_DIR:-/tmp/lunaris-$UID}/lunaris
+has_systemd() { [ -d /run/systemd/system ]; }
+
+# command line of each service (non-systemd); keep in sync with ~/.config/systemd/user
+svc_cmd() {
+	case $1 in
+		picom)     echo "picom --backend glx --vsync" ;;
+		clipmenud) echo "env CM_SELECTIONS=clipboard CM_MAX_CLIPS=500 clipmenud" ;;
+		*) return 1 ;;
+	esac
+}
+
+pidfile() { echo "$RUN/$1.pid"; }
+running() { local p; p=$(cat "$(pidfile "$1")" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+
+# supervisor: restart on crash, give up after 5 crashes in a minute (like the picom unit)
+supervise() {
+	local name=$1 cmd t0 n=0
+	cmd=$(svc_cmd "$name") || exit 1
+	trap 'kill "$child" 2>/dev/null; exit 0' TERM INT
+	while :; do
+		t0=$(date +%s)
+		$cmd >>"$RUN/$name.log" 2>&1 &
+		child=$!
+		wait "$child" && exit 0          # clean exit: done
+		(( $(date +%s) - t0 < 60 )) && n=$((n + 1)) || n=1
+		(( n >= 5 )) && { echo "$(date): $name crashed 5 times in a minute, giving up" >>"$RUN/$name.log"; exit 1; }
+		sleep 1
+	done
+}
+
+start() {
+	local name=$1
+	if has_systemd; then
+		[ "$name" = picom ] && systemctl --user reset-failed picom 2>/dev/null
+		[ "$name" = pipewire ] && { systemctl --user start pipewire.socket pipewire-pulse.socket wireplumber.service 2>/dev/null; return; }
+		systemctl --user start "$name"; return
+	fi
+	mkdir -p "$RUN"
+	if [ "$name" = pipewire ]; then
+		command -v gentoo-pipewire-launcher >/dev/null || { echo "lunaris-svc: gentoo-pipewire-launcher not found" >&2; return 1; }
+		pgrep -u "$UID" -x pipewire >/dev/null && return 0
+		setsid -f gentoo-pipewire-launcher >>"$RUN/pipewire.log" 2>&1 </dev/null
+		return
+	fi
+	running "$name" && return 0
+	svc_cmd "$name" >/dev/null || { echo "lunaris-svc: unknown service: $name" >&2; return 1; }
+	# a copy that isn't ours (started by hand): leave it alone
+	pgrep -u "$UID" -x "$name" >/dev/null && return 0
+	setsid -f "$0" __supervise "$name" </dev/null >/dev/null 2>&1
+	for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$(pidfile "$name")" ] && break; sleep 0.1; done
+}
+
+stop() {
+	local name=$1 p
+	if has_systemd; then
+		[ "$name" = pipewire ] && { systemctl --user stop pipewire.socket pipewire-pulse.socket pipewire wireplumber 2>/dev/null; return; }
+		systemctl --user stop "$name"; return
+	fi
+	if [ "$name" = pipewire ]; then pkill -u "$UID" -x gentoo-pipewire-launcher; pkill -u "$UID" -x wireplumber; pkill -u "$UID" -x pipewire; return 0; fi
+	if running "$name"; then
+		p=$(cat "$(pidfile "$name")"); kill "$p" 2>/dev/null
+		for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+	fi
+	rm -f "$(pidfile "$name")"
+	pkill -u "$UID" -x "$name" 2>/dev/null
+	return 0
+}
+
+status() {
+	local name=$1
+	if has_systemd; then
+		[ "$name" = pipewire ] && name=pipewire.service
+		systemctl --user is-active -q "$name" && { echo "$1: running"; return 0; }
+		echo "$1: stopped"; return 3
+	fi
+	if pgrep -u "$UID" -x "$name" >/dev/null; then echo "$1: running"; return 0; fi
+	echo "$1: stopped"; return 3
+}
+
+has_systemd || mkdir -p "$RUN" 2>/dev/null
+
+case ${1:-} in
+	__supervise)
+		mkdir -p "$RUN"; echo $$ > "$(pidfile "$2")"
+		supervise "$2" ;;
+	start|stop|status) [ -n "${2:-}" ] || { echo "usage: lunaris-svc $1 <service>" >&2; exit 1; }; "$1" "$2" ;;
+	restart) [ -n "${2:-}" ] || { echo "usage: lunaris-svc restart <service>" >&2; exit 1; }
+		if has_systemd; then
+			[ "$2" = picom ] && systemctl --user reset-failed picom 2>/dev/null
+			[ "$2" = pipewire ] && { systemctl --user restart pipewire pipewire-pulse wireplumber; exit; }
+			exec systemctl --user restart "$2"
+		fi
+		[ "$2" = pipewire ] && { exec setsid -f gentoo-pipewire-launcher restart >>"$RUN/pipewire.log" 2>&1 </dev/null; }
+		stop "$2"; start "$2" ;;
+	start-all)
+		if has_systemd; then   # pipewire is socket-activated; restart the others so they get the new DISPLAY
+			systemctl --user restart clipmenud
+			systemctl --user reset-failed picom 2>/dev/null; systemctl --user restart picom
+		else
+			for s in "${SVC_ALL[@]}"; do start "$s"; done
+		fi ;;
+	*) sed -n '2,15p' "$0" >&2; exit 1 ;;
+esac
