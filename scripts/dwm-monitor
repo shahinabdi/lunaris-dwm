@@ -2,10 +2,16 @@
 # dwm-monitor — monitors for Lunaris (xrandr + autorandr), Sway-like hotplug.
 #
 #   dwm-monitor list                   one line per connected output (used by the sidebar):
-#                                      name|on|primary|WxH|rate|x|y|modes(csv)|model
+#                                      name|on|primary|mode WxH|rate|x|y|modes(csv)|model|scale%|logical WxH
 #   dwm-monitor on <out> [WxH]         enable (placed right of the primary by default)
 #   dwm-monitor off <out>              disable (never the last enabled one)
 #   dwm-monitor mode <out> <WxH>       resolution (highest refresh rate for it)
+#   dwm-monitor scale <out> <100-250>  this screen's scale (zoom); the others stay attached to it
+#   dwm-monitor set <out>=<x>,<y> ...  move screens (sidebar drag): overlaps are pushed apart and a
+#                                      screen left floating snaps to the nearest edge (magnet)
+#   dwm-monitor arrange <out>=scale:<pct>|mode:<WxH> ...   several changes in one xrandr call
+#                                      (used by dwm-display), no notification
+#   dwm-monitor geom                   name|scale%|logical WxH per enabled screen
 #   dwm-monitor primary <out>          make primary (bar status, sidebar, scaling follow it)
 #   dwm-monitor place <out> left|right|above|below|mirror   relative to the primary
 #   dwm-monitor detect                 apply the saved profile for what is plugged in, else extend
@@ -15,6 +21,11 @@
 # Hotplug: udev -> autorandr.service -> "autorandr --change --default horizontal"
 # (known setups get their saved profile, new monitors are extended side by side), then
 # ~/.config/autorandr/postswitch re-applies the wallpaper, refreshes the bar and re-lays-out the sidebar.
+#
+# Scaling is per screen: an xrandr transform (--scale-from), so the bar, windows and menus on that
+# screen are bigger, the others stay at 100 %. Whenever a screen changes size the layout is solved again
+# so screens that touched still touch (same side, same alignment) and none overlap.
+# DWM_MONITOR_DRY=1 prints the xrandr command instead of running it.
 
 AR="$HOME/.config/autorandr"
 note() { notify-send -t 2500 -h string:x-dunst-stack-tag:dwm-monitor "Monitors" "$*" 2>/dev/null; }
@@ -51,6 +62,7 @@ for line in sys.stdin:
         if m.group(2) == "connected":
             cur = dict(name=m.group(1), on=1 if m.group(4) else 0, primary=1 if m.group(3) else 0,
                        mode=f"{m.group(5)}x{m.group(6)}" if m.group(4) else "-", rate="-",
+                       logical=f"{m.group(5)}x{m.group(6)}" if m.group(4) else "-",
                        x=m.group(7) or "0", y=m.group(8) or "0", modes=[], model="")
             outs.append(cur)
         continue
@@ -65,13 +77,269 @@ for line in sys.stdin:
         res, rates = mm.group(1), mm.group(2)
         if res not in cur["modes"]: cur["modes"].append(res)
         if "*" in rates:
+            cur["mode"] = res                    # the real mode (the header shows the scaled size)
             r = re.search(r"([\d.]+)\*", rates)
             if r: cur["rate"] = str(round(float(r.group(1))))
 if cur and edid_lines: cur["model"] = model("".join(edid_lines))
+def scale(o):
+    try:
+        mw, mh = (int(v) for v in o["mode"].split("x")); lw, lh = (int(v) for v in o["logical"].split("x"))
+        return str(round(max(mw, mh) * 100 / max(lw, lh)))
+    except Exception:
+        return "100"
 for o in outs:
     print("|".join([o["name"], str(o["on"]), str(o["primary"]), o["mode"], o["rate"], o["x"], o["y"],
-                    ",".join(o["modes"][:6]), o["model"] or o["name"]]))
+                    ",".join(o["modes"][:6]), o["model"] or o["name"], scale(o), o["logical"]]))
 '
+}
+
+# ---------------------------------------------------------------- geometry (python): per-screen scale + layout
+read -r -d '' GEOM <<'PY'
+import sys, re, subprocess
+
+# Screen geometry for dwm-monitor: each output has its own scale (xrandr transform), and when a
+# screen changes size (scale or resolution) the others are moved so that screens that touched
+# still touch (same side, same alignment) and nothing overlaps.
+#
+#   relayout [OUT=scale:PCT] [OUT=mode:WxH] ...   print the xrandr arguments for the change
+#   place OUT=X,Y ...                            explicit positions (sidebar drag), normalised
+#   info                                          name|scalePct|logicalWxH per enabled output
+
+TOL = 2  # px: edges this close count as touching
+
+def parse(text):
+    outs, cur = {}, None
+    for line in text.splitlines():
+        m = re.match(r"^(\S+) (connected|disconnected)( primary)?(?: (\d+)x(\d+)\+(-?\d+)\+(-?\d+))?(?: \(0x[0-9a-f]+\))?(?: (normal|left|right|inverted))?", line)
+        if m:
+            cur = None
+            if m.group(2) == "connected" and m.group(4):
+                cur = dict(name=m.group(1), primary=bool(m.group(3)), w=int(m.group(4)), h=int(m.group(5)),
+                           x=int(m.group(6)), y=int(m.group(7)), rot=m.group(8) or "normal", mw=0, mh=0)
+                outs[cur["name"]] = cur
+            continue
+        if cur is not None and not cur["mw"]:
+            mm = re.match(r"^\s+(\d+)x(\d+)i? \(0x[0-9a-f]+\).*\*current", line)
+            if mm:
+                cur["mw"], cur["mh"] = int(mm.group(1)), int(mm.group(2))
+    for o in outs.values():
+        if not o["mw"]:
+            o["mw"], o["mh"] = o["w"], o["h"]
+        o["sw"], o["sh"] = (o["mh"], o["mw"]) if o["rot"] in ("left", "right") else (o["mw"], o["mh"])
+        o["scale"] = round(o["sw"] * 100 / o["w"]) if o["w"] else 100
+    return outs
+
+def logical(sw, sh, pct):
+    return (sw, sh) if pct == 100 else (sw * 100 // pct, sh * 100 // pct)
+
+def overlap(a0, a1, b0, b1):
+    return min(a1, b1) - max(a0, b0)
+
+def relations(o):
+    """How screen pairs touch in the current layout: (a, b, axis, align) means b sits right of a
+    (axis 'x') or below a (axis 'y'); align = how b lines up on the other axis."""
+    rel, names = [], list(o)
+    for a in names:
+        for b in names:
+            if a == b: continue
+            A, B = o[a], o[b]
+            for axis, (a_end, b_start, p0, p1, q0, q1) in {
+                "x": (A["x"] + A["w"], B["x"], A["y"], A["y"] + A["h"], B["y"], B["y"] + B["h"]),
+                "y": (A["y"] + A["h"], B["y"], A["x"], A["x"] + A["w"], B["x"], B["x"] + B["w"]),
+            }.items():
+                if abs(a_end - b_start) <= TOL and overlap(p0, p1, q0, q1) > 0:
+                    if abs(q0 - p0) <= TOL: al = ("start", 0)
+                    elif abs(q1 - p1) <= TOL: al = ("end", 0)
+                    elif abs((q0 + q1) - (p0 + p1)) <= 2 * TOL: al = ("center", 0)
+                    else: al = ("offset", q0 - p0)
+                    rel.append((a, b, axis, al))
+    return rel
+
+def mirrors(o):
+    groups, seen = [], set()
+    for a in o:
+        if a in seen: continue
+        g = [b for b in o if o[b]["x"] == o[a]["x"] and o[b]["y"] == o[a]["y"]]
+        seen.update(g)
+        groups.append(g)
+    return groups
+
+def rect_overlap(A, B):
+    return overlap(A["x"], A["x"] + A["w"], B["x"], B["x"] + B["w"]) > 0 and \
+           overlap(A["y"], A["y"] + A["h"], B["y"], B["y"] + B["h"]) > 0
+
+def constraints(rel, axis):
+    """Per-axis rules from the touching pairs: (strength, src, dst, f) with dst[axis] = f(new).
+    0 = the two screens touch along this axis, 1 = edges/centres line up, 2 = keep the offset."""
+    pos, size = ("x", "w") if axis == "x" else ("y", "h")
+    out = []
+    for a, b, ax, (al, off) in rel:
+        if ax == axis:     # b right of / below a
+            out.append((0, a, b, lambda n, a=a: n[a][pos] + n[a][size]))
+            out.append((0, b, a, lambda n, a=a, b=b: n[b][pos] - n[a][size]))
+        elif al == "start":
+            out.append((1, a, b, lambda n, a=a: n[a][pos]))
+            out.append((1, b, a, lambda n, b=b: n[b][pos]))
+        elif al == "end":
+            out.append((1, a, b, lambda n, a=a, b=b: n[a][pos] + n[a][size] - n[b][size]))
+            out.append((1, b, a, lambda n, a=a, b=b: n[b][pos] + n[b][size] - n[a][size]))
+        elif al == "center":
+            out.append((1, a, b, lambda n, a=a, b=b: n[a][pos] + (n[a][size] - n[b][size]) // 2))
+            out.append((1, b, a, lambda n, a=a, b=b: n[b][pos] + (n[b][size] - n[a][size]) // 2))
+        else:
+            out.append((2, a, b, lambda n, a=a, off=off: n[a][pos] + off))
+            out.append((2, b, a, lambda n, b=b, off=off: n[b][pos] - off))
+    return out
+
+def relayout(o, changes):
+    rel = relations(o)
+    groups = mirrors(o)
+    lead = {m: g[0] for g in groups for m in g}
+    new = {n: dict(o[n]) for n in o}
+    for n, (sw, sh, pct) in changes.items():
+        new[n]["w"], new[n]["h"] = logical(sw, sh, pct)
+    for g in groups:   # mirrored screens: placed as one (the first one's size)
+        for n in g[1:]:
+            new[n]["w"], new[n]["h"] = new[g[0]]["w"], new[g[0]]["h"]
+    leads = [g[0] for g in groups]
+    rel = [r for r in rel if lead[r[0]] == r[0] and lead[r[1]] == r[1]]
+    # the screen in the top-left corner stays where it is; everything else follows it
+    anchor = min(leads, key=lambda n: (o[n]["x"] + o[n]["y"], o[n]["y"]))
+    for axis in ("x", "y"):
+        rules = constraints(rel, axis)
+        placed = {anchor}
+        while True:
+            todo = [r for r in rules if r[1] in placed and r[2] not in placed]
+            if not todo: break
+            s, src, dst, f = min(todo, key=lambda r: r[0])
+            new[dst][axis] = f(new)
+            placed.add(dst)
+    fix_overlaps(new, leads)
+    attach(new, leads)
+    for g in groups:
+        for m in g[1:]: new[m]["x"], new[m]["y"] = new[g[0]]["x"], new[g[0]]["y"]
+    return new
+
+def fix_overlaps(new, leads):
+    """Push overlapping screens apart: the one further from the top-left moves right or down."""
+    for _ in range(8 * len(leads)):
+        moved = False
+        for i, a in enumerate(leads):
+            for b in leads[i + 1:]:
+                A, B = new[a], new[b]
+                if not rect_overlap(A, B): continue
+                if (A["x"] + A["y"], A["y"]) > (B["x"] + B["y"], B["y"]): A, B = B, A
+                dx = A["x"] + A["w"] - B["x"]
+                dy = A["y"] + A["h"] - B["y"]
+                if dx <= dy: B["x"] += dx
+                else: B["y"] += dy
+                moved = True
+        if not moved: break
+
+def touching(A, B):
+    return (overlap(A["y"], A["y"] + A["h"], B["y"], B["y"] + B["h"]) > 0 and
+            (abs(A["x"] + A["w"] - B["x"]) <= TOL or abs(B["x"] + B["w"] - A["x"]) <= TOL)) or \
+           (overlap(A["x"], A["x"] + A["w"], B["x"], B["x"] + B["w"]) > 0 and
+            (abs(A["y"] + A["h"] - B["y"]) <= TOL or abs(B["y"] + B["h"] - A["y"]) <= TOL))
+
+def snap_spots(N, O):
+    """Places where N touches O: on each side, sliding along it, edges/centres lined up when close."""
+    w, h = N["w"], N["h"]
+    mx, my = min(200, w // 4, O["w"] // 4), min(200, h // 4, O["h"] // 4)   # keep a real shared edge
+    spots = []
+    for x in (O["x"] - w, O["x"] + O["w"]):                    # left / right of O
+        y = max(O["y"] - h + my, min(N["y"], O["y"] + O["h"] - my))
+        spots.append((x, y))
+        spots += [(x, O["y"]), (x, O["y"] + O["h"] - h), (x, O["y"] + (O["h"] - h) // 2)]
+    for y in (O["y"] - h, O["y"] + O["h"]):                    # above / below O
+        x = max(O["x"] - w + mx, min(N["x"], O["x"] + O["w"] - mx))
+        spots.append((x, y))
+        spots += [(O["x"], y), (O["x"] + O["w"] - w, y), (O["x"] + (O["w"] - w) // 2, y)]
+    return spots
+
+def attach(new, leads):
+    """A screen left floating (touching nothing) moves to the nearest free spot next to another one."""
+    if len(leads) < 2: return
+    for n in leads:
+        N = new[n]
+        others = [new[m] for m in leads if m != n]
+        if any(touching(N, O) for O in others): continue
+        best = None
+        for O in others:
+            for x, y in snap_spots(N, O):
+                T = dict(N, x=x, y=y)
+                if any(rect_overlap(T, P) for P in others): continue
+                d = (x - N["x"]) ** 2 + (y - N["y"]) ** 2
+                if best is None or d < best[0]: best = (d, x, y)
+        if best: N["x"], N["y"] = best[1], best[2]
+
+def normalise(new):
+    mx = min(v["x"] for v in new.values()); my = min(v["y"] for v in new.values())
+    for v in new.values(): v["x"] -= mx; v["y"] -= my
+
+def args_for(o, new, changes, modes):
+    a = []
+    for n in sorted(new, key=lambda n: (not o[n]["primary"], n)):
+        a += ["--output", n]
+        if n in modes: a += ["--mode", modes[n][0]] + (["--rate", modes[n][1]] if modes[n][1] else [])
+        if n in changes:
+            sw, sh, pct = changes[n]
+            if pct == 100: a += ["--scale", "1x1"]
+            else:
+                lw, lh = logical(sw, sh, pct)
+                a += ["--scale-from", f"{lw}x{lh}"]
+        a += ["--pos", f"{new[n]['x']}x{new[n]['y']}"]
+    return a
+
+def main():
+    cmd, rest = sys.argv[1], sys.argv[2:]
+    text = sys.stdin.read() if rest[:1] == ["-"] else subprocess.run(["xrandr", "--verbose"], capture_output=True, text=True).stdout
+    rest = [r for r in rest if r != "-"]
+    o = parse(text)
+    if not o: sys.exit("no enabled screen")
+    if cmd == "info":
+        for n, v in o.items(): print(f"{n}|{v['scale']}|{v['w']}x{v['h']}")
+        return
+    if cmd == "place":
+        new = {n: dict(o[n]) for n in o}
+        for r in rest:
+            n, xy = r.split("=", 1)
+            if n not in new: sys.exit(f"{n}: not an enabled screen")
+            new[n]["x"], new[n]["y"] = (int(float(v)) for v in xy.split(","))
+        leads = [g[0] for g in mirrors(new)]
+        fix_overlaps(new, leads)
+        attach(new, leads)
+        normalise(new)
+        print("\n".join(args_for(o, new, {}, {})))
+        return
+    # relayout
+    changes, modes = {}, {}
+    for r in rest:
+        n, kv = r.split("=", 1)
+        if n not in o: sys.exit(f"{n}: not an enabled screen")
+        k, v = kv.split(":", 1)
+        sw, sh, pct = changes.get(n, (o[n]["sw"], o[n]["sh"], o[n]["scale"]))
+        if k == "scale": pct = int(v)
+        elif k == "mode":
+            res, _, rate = v.partition("@")
+            mw, mh = (int(x) for x in res.split("x"))
+            sw, sh = (mh, mw) if o[n]["rot"] in ("left", "right") else (mw, mh)
+            modes[n] = (res, rate)
+        changes[n] = (sw, sh, pct)
+    new = relayout(o, changes)
+    normalise(new)
+    print("\n".join(args_for(o, new, changes, modes)))
+
+main()
+PY
+geom() { python3 -c "$GEOM" "$@"; }
+# run "geom relayout|place ..." as one xrandr call
+arrange() {
+	local out a
+	out=$(geom "$@") || { note "Layout: ${out:-failed}"; return 1; }
+	mapfile -t a <<<"$out"
+	if [ -n "${DWM_MONITOR_DRY:-}" ]; then echo "xrandr ${a[*]}"; return 0; fi
+	xrandr "${a[@]}"
 }
 
 best_rate() { # highest refresh rate available for <out> <WxH>
@@ -90,7 +358,15 @@ case $1 in
 		xrandr --output "$2" --off; after; note "$2 off" ;;
 	mode)
 		r=$(best_rate "$2" "$3")
-		xrandr --output "$2" --mode "$3" ${r:+--rate "$r"} && after && note "$2: $3${r:+ @ ${r%.*} Hz}" ;;
+		arrange relayout "$2=mode:$3${r:+@$r}" && after && note "$2: $3${r:+ @ ${r%.*} Hz}" ;;
+	scale)
+		[[ $3 =~ ^[0-9]+$ ]] && (( $3 >= 100 && $3 <= 250 )) || { echo "scale <out> 100-250" >&2; exit 1; }
+		arrange relayout "$2=scale:$3" && after && note "$2: scale $3 %" ;;
+	arrange)
+		shift; arrange relayout "$@" || exit 1; [ -n "${DWM_MONITOR_DRY:-}" ] || after ;;
+	set)
+		shift; arrange place "$@" || exit 1; [ -n "${DWM_MONITOR_DRY:-}" ] || after ;;
+	geom) geom info ;;
 	primary) xrandr --output "$2" --primary; after; note "$2 is now primary" ;;
 	place)
 		p=$(primary)
@@ -121,5 +397,5 @@ case $1 in
 			on)  rm -f "$AR/block"; note "Automatic switching on" ;;
 			*)   [ -e "$AR/block" ] && echo off || echo on ;;
 		esac ;;
-	*) sed -n '2,18p' "$0" >&2; exit 1 ;;
+	*) sed -n '2,30p' "$0" >&2; exit 1 ;;
 esac

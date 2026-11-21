@@ -34,7 +34,56 @@ sorted() { images | sort; } # stable order for next / prev
 
 apply() {
 	[ -f "$WALL" ] || return 1
+	if (( $(xrandr --listactivemonitors 2>/dev/null | awk 'NR==1{print $2}') + 0 > 1 )) &&
+	   ! feh --version 2>/dev/null | grep -q xinerama && per_screen; then
+		return 0
+	fi
 	feh --no-fehbg "--bg-$MODE" "$WALL" 2>/dev/null
+}
+
+# feh fills every screen on its own only when it was built with Xinerama (Arch: yes; Gentoo: USE=xinerama).
+# Without it one image is stretched over all the screens, so draw each screen's part here (python-pillow)
+# and give feh the finished picture. Cached: re-drawn only when the image, mode or screens change.
+per_screen() {
+	local cache="${XDG_CACHE_HOME:-$HOME/.cache}/lunaris" geo
+	geo="$(xrandr --listactivemonitors 2>/dev/null | awk 'NR>1{print $3}' | paste -sd' ')"
+	geo+=" $(xrandr --query 2>/dev/null | sed -nE '1s/.*current ([0-9]+) x ([0-9]+).*/\1x\2/p')"
+	mkdir -p "$cache"
+	python3 - "$WALL" "$MODE" "$cache/wallpaper.png" $geo <<'PY' 2>/dev/null || return 1
+import sys, os, re
+from PIL import Image, ImageOps
+wall, mode, out, *geo = sys.argv[1:]
+screen = tuple(int(v) for v in geo.pop().split("x"))
+mons = []
+for g in geo:   # 2194/597x1234/336+3440+1080
+    m = re.match(r"(\d+)/\d+x(\d+)/\d+\+(-?\d+)\+(-?\d+)", g)
+    if m: mons.append(tuple(int(v) for v in m.groups()))
+stamp = out + ".key"
+key = f"{wall}|{os.path.getmtime(wall)}|{mode}|{screen}|{mons}"
+if os.path.exists(out) and os.path.exists(stamp) and open(stamp).read() == key:
+    sys.exit(0)
+src = Image.open(wall).convert("RGB")
+canvas = Image.new("RGB", screen, "black")
+for w, h, x, y in mons:
+    if mode == "fill":
+        part = ImageOps.fit(src, (w, h), Image.LANCZOS)
+    elif mode == "max":
+        part = Image.new("RGB", (w, h), "black")
+        c = ImageOps.contain(src, (w, h), Image.LANCZOS)
+        part.paste(c, ((w - c.width) // 2, (h - c.height) // 2))
+    elif mode == "center":
+        part = Image.new("RGB", (w, h), "black")
+        part.paste(src, ((w - src.width) // 2, (h - src.height) // 2))
+    else:  # tile
+        part = Image.new("RGB", (w, h))
+        for ty in range(0, h, src.height):
+            for tx in range(0, w, src.width):
+                part.paste(src, (tx, ty))
+    canvas.paste(part, (x, y))
+canvas.save(out, compress_level=1)
+open(stamp, "w").write(key)
+PY
+	feh --no-fehbg --bg-center "$cache/wallpaper.png" 2>/dev/null
 }
 
 set_wall() {
