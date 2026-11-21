@@ -51,6 +51,8 @@ Update an existing install: sidebar → ⚙ Settings → **Updates**, or `lunari
 - Suspend / reboot / shut down use `loginctl` (elogind) when there is no systemd.
 
 ### Fixed
+- **Tearing on a scaled screen** with AMD's X driver (`xf86-video-amdgpu`, what Gentoo installs): TearFree is
+  turned on for scaled screens only, after every layout change and at login (`dwm-monitor tearfree`).
 - **Wallpaper spread over all the screens** when `feh` is built without Xinerama (Gentoo's default): `dwm-wall` now draws
   each screen's part itself (python-pillow) so every screen gets the whole image (fill / fit / center / tile per screen).
 - Monitors: the resolution of a scaled screen was shown as its scaled size (e.g. 2194x1234 instead of 3840x2160).
