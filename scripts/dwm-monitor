@@ -15,7 +15,10 @@
 #   dwm-monitor primary <out>          make primary (bar status, sidebar, scaling follow it)
 #   dwm-monitor place <out> left|right|above|below|mirror   relative to the primary
 #   dwm-monitor detect                 apply the saved profile for what is plugged in, else extend
-#   dwm-monitor save [name] | load <name> | delete <name> | profiles
+#   dwm-monitor save [name] | load <name> | delete <name> | profiles   (name|detected/current|default 0/1)
+#   dwm-monitor default [<name>|off]   the layout loaded at login when its screens are connected
+#   dwm-monitor startup                at login: the default layout, else a saved one for these screens
+#                                      (exit 1 when none matches: dwm-display then applies its saved scales)
 #   dwm-monitor auto on|off|status     automatic switching on hotplug (autorandr + udev)
 #
 # Hotplug: udev -> autorandr.service -> "autorandr --change --default horizontal"
@@ -28,6 +31,11 @@
 # DWM_MONITOR_DRY=1 prints the xrandr command instead of running it.
 
 AR="$HOME/.config/autorandr"
+CONF="$HOME/.config/dwm-monitor.conf"   # DEFAULT=<profile>
+DEFAULT=""
+[ -r "$CONF" ] && . "$CONF"
+set_default() { printf 'DEFAULT=%q\n' "$1" > "$CONF"; DEFAULT=$1; }
+detected() { autorandr --detected 2>/dev/null | awk '{print $1}'; }
 note() { notify-send -t 2500 -h string:x-dunst-stack-tag:dwm-monitor "Monitors" "$*" 2>/dev/null; }
 after() { # things that depend on the screen layout
 	"$HOME/.local/bin/dwm-wall" restore --no-slideshow >/dev/null 2>&1
@@ -389,8 +397,28 @@ case $1 in
 		[ -n "$name" ] || exit 0
 		autorandr --save "$name" --force >/dev/null && note "Profile saved: $name" ;;
 	load) autorandr --load "$2" >/dev/null && after && note "Profile: $2" ;;
-	delete) autorandr --remove "$2" >/dev/null && note "Profile deleted: $2" ;;
-	profiles) autorandr 2>/dev/null | sed -E 's/ \((detected|current)\)/|\1/; s/ \(current\)/|current/' ;;
+	delete)
+		autorandr --remove "$2" >/dev/null || exit 1
+		[ "$2" = "$DEFAULT" ] && set_default ""
+		note "Profile deleted: $2" ;;
+	profiles)
+		autorandr 2>/dev/null | awk -v d="$DEFAULT" '{
+			n=$1; st=""; if ($0 ~ /\(current\)/) st="current"; else if ($0 ~ /\(detected\)/) st="detected"
+			print n "|" st "|" (n==d ? 1 : 0) }' ;;
+	default)
+		case ${2:-} in
+			"") echo "${DEFAULT:-none}" ;;
+			off|none) set_default ""; note "No default layout: the screens start as they come" ;;
+			*) [ -d "$AR/$2" ] || { echo "no saved layout called $2" >&2; exit 1; }
+			   set_default "$2"; note "Default layout: $2" "Loaded at login when these screens are connected." ;;
+		esac ;;
+	startup)
+		p=""
+		[ -n "$DEFAULT" ] && detected | grep -qxF -- "$DEFAULT" && p=$DEFAULT
+		[ -z "$p" ] && p=$(detected | head -1)
+		[ -n "$p" ] || exit 1
+		autorandr --load "$p" >/dev/null 2>&1 || exit 1
+		echo "$p" ;;
 	auto)
 		case $2 in
 			off) mkdir -p "$AR"; printf '#!/bin/sh\n# dwm-monitor: automatic switching is off\nexit 0\n' > "$AR/block"; chmod +x "$AR/block"; note "Automatic switching off" ;;
