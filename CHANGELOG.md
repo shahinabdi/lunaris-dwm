@@ -13,7 +13,7 @@ Update an existing install: sidebar → ⚙ Settings → **Updates**, or `lunari
 
 ---
 
-## [Unreleased]
+## [0.11.0] — 2026-11-27 · Gentoo support, per-screen monitors, one repo
 
 ### Added
 - **Drop-down menus for each screen** (Settings → Monitors): *Resolution* (every mode the screen has), *Refresh rate*
@@ -47,6 +47,8 @@ Update an existing install: sidebar → ⚙ Settings → **Updates**, or `lunari
 - Weekly update check without systemd: `lunaris-update autocheck --loop`, toggled with `lunaris-update timer on|off`.
 
 ### Changed
+- **One repo for Arch and Gentoo**: `lunaris-gentoo` is merged into `lunaris`; `install.sh` picks the distro.
+  Gentoo clones: `git remote set-url origin https://github.com/shahinabdi/lunaris.git`.
 - When a screen changes size (scale or resolution) the others are moved so screens that touched still touch, on the
   same side and with the same alignment, and none overlap (before: the others kept their position, leaving gaps or
   overlapping screens).
@@ -56,10 +58,17 @@ Update an existing install: sidebar → ⚙ Settings → **Updates**, or `lunari
 ### Fixed
 - **Tearing on a scaled screen** with AMD's X driver (`xf86-video-amdgpu`, what Gentoo installs): TearFree is
   turned on for scaled screens only, after every layout change and at login (`dwm-monitor tearfree`).
+- **Emoji showed as empty boxes** (VS Code, kitty, …): no emoji font was installed. Added `noto-fonts-emoji` (Arch) /
+  `media-fonts/noto-emoji` (Gentoo) to the core packages. Existing installs: `sudo pacman -S noto-fonts-emoji`.
 - **Wallpaper spread over all the screens** when `feh` is built without Xinerama (Gentoo's default): `dwm-wall` now draws
   each screen's part itself (python-pillow) so every screen gets the whole image (fill / fit / center / tile per screen).
 - Monitors: the resolution of a scaled screen was shown as its scaled size (e.g. 2194x1234 instead of 3840x2160).
 - `install.sh` exited silently on a fresh install (no `~/.config/dwm-dev.conf` yet).
+
+### Upgrade note
+- New packages (emoji font, `ddcutil`): the update says *System files / packages changed* and offers to run
+  `./install.sh --no-apps`: answer yes. Log out and in once afterwards (access to external monitors' brightness).
+- Gentoo users who cloned `lunaris-gentoo`: `git -C ~/lunaris-gentoo remote set-url origin https://github.com/shahinabdi/lunaris.git`.
 
 ---
 
@@ -271,6 +280,7 @@ Update an existing install: sidebar → ⚙ Settings → **Updates**, or `lunari
   controls (`dwm-ctl`), status bar (`dwm-status`).
 - French AZERTY ⇄ Persian keyboard layouts.
 
+[0.11.0]: https://github.com/shahinabdi/lunaris/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/shahinabdi/lunaris/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/shahinabdi/lunaris/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/shahinabdi/lunaris/compare/v0.7.0...v0.8.0
